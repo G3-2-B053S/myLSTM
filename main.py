@@ -1,42 +1,98 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.utils.data as Data
-import numpy as np
+"""
+Main Function
+"""
+
+#from unittest import result
+#import numpy as np
+import logging.config
+import random, time
+#import matplotlib.pyplot as plt
+import data_deal
+import sys
 import os
-import random
+import tensorflow as tf
+import feature_extract
 from matplotlib import pyplot
-import time
+
+curPath = os.path.abspath(os.path.dirname(__file__))
+rootPath = os.path.split(curPath)[0]
+sys.path.append(rootPath)
+sys.path.append(rootPath + '/xDLbase')
+sys.path.append(rootPath + '/xutils')
+
+from xDLbase.xview import *
+from xDLbase.fc import *
+from xDLbase.rnn import *
+from xDLbase.optimizers import *
+from xDLbase.activators import *
+from xDLbase.session import *
+
+# create logger
+exec_abs = os.getcwd()
+log_conf = exec_abs + '/config/logging.conf'
+logging.config.fileConfig(log_conf)
+logger = logging.getLogger('main')
+
+# 持久化配置
+trace_file_path = 'D:/0tmp/'
+exec_name = os.path.basename(__file__)
+trace_file = trace_file_path + exec_name + ".data"
+
 train_data = 'C:/Users/Administrator/PycharmProjects/pythonProject/files/train'
 val_data = 'C:/Users/Administrator/PycharmProjects/pythonProject/files/val'
 test_data = 'C:/Users/Administrator/PycharmProjects/pythonProject/files/test'
 
-# 假设有一个简单的LSTM模型用于序列分类
-class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes):
-        super(LSTMModel, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True,dropout=0.01)
-        self.fc1 = nn.Linear(hidden_size, num_classes)
-        #self.fc2 = nn.Linear(num_classes, num_classes)
-        #self.activate = nn.ReLU()
+# General params
+class Params:
+    EPOCH_NUM = 10  # EPOCH
+    MINI_BATCH_SIZE = 8  # batch_size
+    ITERATION = 1  # 每batch训练轮数
+    # LEARNING_RATE = 0.005  # Vanilla E5:loss 0.0014, 好于AdaDelta的0.0021
+    LEARNING_RATE = 0.001  # LSTM
+    # LEARNING_RATE = 0.002  # GRU
+    # LEARNING_RATE = 0.1  # BiLSTM
+    # LEARNING_RATE = 0.1  # BiGRU
+    # LEARNING_RATE = 0.05  # BiGRU+ReLU
+    # VAL_FREQ = 30  # val per how many batches
+    VAL_FREQ = 5  # val per how many batches
+    # LOG_FREQ = 10  # log per how many batches
+    LOG_FREQ = 1  # log per how many batches
 
-    def forward(self, x):
-        # 初始化隐藏状态
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
+    HIDDEN_SIZE = 12  # LSTM中隐藏节点的个数,每个时间节点上的隐藏节点的个数，是w的维度.
+    # RNN/LSTM/GRU每个层次的的时间节点个数，有输入数据的元素个数确定。
+    NUM_LAYERS = 2  # RNN/LSTM的层数。
+    # 设置缺省数值类型
+    DTYPE_DEFAULT = np.float32
+    INIT_W = 0.01  # 权重矩阵初始化参数
 
-        # 将x传递给LSTM
-        out, _ = self.lstm(x, (h0, c0))
-        #print(out.shape)
-        # 将LSTM的最后一个时间步输出传递给全连接层
-        out = self.fc1(out[:, -1, :])
-        #out=self.activate(out)
-        # 将LSTM的最后一个时间步输出传递给全连接层
-        #out = self.fc2(out)
-        return out
+    DROPOUT_R_RATE = 1  # dropout比率
+    TIMESTEPS = 1  # 循环神经网络的训练序列长度。
+    PRED_STEPS = TIMESTEPS  # 预测序列长度
+    TRAINING_STEPS = 10000  # 训练轮数。
+    TRAINING_EXAMPLES = 10000  # 训练数据个数。
+    TESTING_EXAMPLES = 1000  # 测试数据个数。
+    SAMPLE_GAP = 0.01  # 采样间隔。
+    VALIDATION_CAPACITY = TESTING_EXAMPLES - TIMESTEPS  # 验证集大小
+    TYPE_K = 2  # 分类类别
 
+    # 持久化开关
+    TRACE_FLAG = False
+    # loss曲线开关
+    SHOW_LOSS_CURVE = True
+
+    # Optimizer params
+    BETA1 = 0.9
+    BETA2 = 0.999
+    EPS = 1e-8
+    EPS2 = 1e-10
+    REG_PARA = 0.5  # 正则化乘数
+    LAMDA = 1e-4  # 正则化系数lamda
+    INIT_RNG = 1e-4
+
+    # 并行度
+    # TASK_NUM_MAX = 3
+    # 任务池
+    # g_pool = ProcessPoolExecutor(max_workers=TASK_NUM_MAX)
 
 class SeqData(object):
     def __init__(self, dataType):
@@ -92,10 +148,10 @@ class SeqData(object):
         yArray = []
         xArray=[]
         paths = os.listdir(train_data)
-        y=0
+        y=1
         for dir in paths:
             data_path=train_data+'/'+dir
-            if y == 0:
+            if y == 1:
                 xArray,yArray=self.read_data(data_path,y)
             else:
                 tempx, tempy = self.read_data(data_path, y)
@@ -129,10 +185,10 @@ class SeqData(object):
         yArray = []
         xArray=[]
         paths = os.listdir(val_data)
-        y=340
+        y=341
         for dir in paths:
             data_path=val_data+'/'+dir
-            if y == 340:
+            if y == 341:
                 xArray,yArray=self.read_data(data_path,y)
             else:
                 tempx, tempy = self.read_data(data_path, y)
@@ -151,10 +207,10 @@ class SeqData(object):
         yArray = []
         xArray=[]
         paths = os.listdir(test_data)
-        y=380
+        y=381
         for dir in paths:
             data_path=test_data+'/'+dir
-            if y == 380:
+            if y == 381:
                 xArray,yArray=self.read_data(data_path,y)
             else:
                 tempx, tempy = self.read_data(data_path, y)
@@ -167,134 +223,164 @@ class SeqData(object):
         testY=yArray
         testX=xArray
         return testX, testY
-'''
-    def getValRanges(self,miniBatchSize):
-        rangeAll = self.sample_range_v
-        rngs = [rangeAll[i:i + miniBatchSize] for i in range(0, len(rangeAll), miniBatchSize)]
-        return rngs
-    def getValDataByRng(self, rng):
-        xs = np.array([self.x_v[sample] for sample in rng], self.dataType)
-        values = np.array([self.y_v[sample] for sample in rng])
-        return xs, values
-'''
-'''
-    def getTestRanges(self,miniBatchSize):
-        rangeAll = self.sample_range_t
-        rngs = [rangeAll[i:i + miniBatchSize] for i in range(0, len(rangeAll), miniBatchSize)]
-        return rngs
-    def getTestDataByRng(self, rng):
-        xs = np.array([self.x_t[sample] for sample in rng], self.dataType)
-        values = np.array([self.y_t[sample] for sample in rng])
-        return xs, values
-        '''
-# 示例数据
-batch_size = 32
-seq_len = 200
-input_size = 12
-hidden_size = 200
-num_layers = 3
-num_classes = 400
-batch_first = True
-lr = 0.001
-start = time.time()
-print("start time is :", start)
-# 实例化模型并优化器
-model = LSTMModel(input_size, hidden_size, num_layers, num_classes)
-optimizer = optim.Adam(model.parameters(), lr=0.001)
-seqData = SeqData(np.float32)
-Triain_ACC=[]
-Triain_loss=[]
-VAL_ACC=[]
-VAL_loss=[]
-# 训练过程
-epochs = 10
-dataRngs = seqData.getTrainRanges(batch_size)
-dataRngs_len=len(dataRngs)
-train_data_len=int(dataRngs_len*0.85)
-validate_data_len=train_data_len+int(dataRngs_len*0.1)
 
-for epoch in range(epochs):
-    count_acc=0
-    for batch_idx in range(train_data_len):
-        x, y_ = seqData.getTrainDataByRng(dataRngs[batch_idx])
-        inpt = torch.tensor(x)
-        target = torch.tensor(y_)
-        optimizer.zero_grad()
-        output = model(inpt)
-        y_argmax = torch.argmax(output, axis=1)
-        #print(output.dtype)
-        #print(y_argmax)
-        #print(target)
-        loss = nn.CrossEntropyLoss()(output, target.to(torch.int64))
-        #loss.requires_grad_()
-        loss.backward()
-        optimizer.step()
-        correct = (y_argmax.to(target.dtype) == target).sum().float() / 32
-        count_acc+=correct
-        if (batch_idx % 5 == 0):  # 若干个batch show一次日志
-            print("training epoch: {} batch: {} Accuracy: {} loss {}".format(epoch, batch_idx, correct, loss.item()))
-    Triain_ACC.append(count_acc/(len(dataRngs)-1))
-    Triain_loss.append(loss.item())
-        # 使用随机验证样本验证结果
-    #dataRngs_v = seqData.getValRanges(batch_size)
-    count_acc=0
+def main_rnn():
+    logger.info('start..')
+    # 初始化
+    try:
+        os.remove(trace_file)
+    except FileNotFoundError:
+        pass
+
+    # if (True == Params.SHOW_LOSS_CURVE):
+    # 配置训练结果展示图的参数
+    view = ResultView(Params.EPOCH_NUM,
+                      ['train_loss', 'val_loss', 'train_acc', 'val_acc'],
+                      ['k', 'r', 'g', 'b'],
+                      ['Iteration', 'Loss', 'Accuracy'],
+                      Params.DTYPE_DEFAULT)
+    s_t = 0
+    # 构建监督学习数据，维度为N,T,D :(N,10,1)->(N,1,10)
+    seqData = SeqData(Params.DTYPE_DEFAULT)
+    dataRngs = seqData.getTrainRanges(Params.MINI_BATCH_SIZE)
+    dataRngs_len = len(dataRngs)
+    train_data_len = int(dataRngs_len * 0.85)
+    validate_data_len = train_data_len + int(dataRngs_len * 0.1)
+    # 定义网络结构，优化器参数，支持各层使用不同的优化器。
+    # optmParamsRnn1 = (Params.BETA1, Params.BETA2, Params.EPS)
+    # optimizer = AdagradOptimizer
+
+    # optmParamsRnn1 = (Params.BETA1,Params.EPS)
+    # optimizer = AdaDeltaOptimizer
+
+    optmParamsRnn1 = (Params.BETA1, Params.BETA2, Params.EPS)
+    optimizer = AdamOptimizer
+
+    # rnn
+    # rnn1 = RnnLayer('rnn1',Params.MINI_BATCH_SIZE,Params.HIDDEN_SIZE,3,optimizer,optmParamsRnn1,Params.DROPOUT_R_RATE,Params.DTYPE_DEFAULT,Params.INIT_RNG)
+
+    # LSTM
+    rnn1 = LSTMLayer('lstm1', Params.MINI_BATCH_SIZE, Params.HIDDEN_SIZE, 3, optimizer, optmParamsRnn1,
+                     Params.DROPOUT_R_RATE, Params.DTYPE_DEFAULT, Params.INIT_RNG)
+
+    # BiLSTM
+    # rnn1 = BiLSTMLayer('Bilstm1',Params.MINI_BATCH_SIZE,Params.HIDDEN_SIZE,3,optimizer,optmParamsRnn1,Params.DROPOUT_R_RATE,Params.DTYPE_DEFAULT,Params.INIT_RNG)
+
+    # GRU
+    # rnn1 = GRULayer('gru1',Params.MINI_BATCH_SIZE,Params.HIDDEN_SIZE,3,optimizer,optmParamsRnn1,Params.DROPOUT_R_RATE,Params.DTYPE_DEFAULT,Params.INIT_RNG)
+
+    # BiGRU
+    # rnn1 = BiGRULayer('bigru1',Params.MINI_BATCH_SIZE,Params.HIDDEN_SIZE,3,optimizer,optmParamsRnn1,Params.DROPOUT_R_RATE,Params.DTYPE_DEFAULT,Params.INIT_RNG)
+
+    # 全连接层优化器
+    optmParamsFc1 = (Params.BETA1, Params.BETA2, Params.EPS)
+    # RNN输出全部T个节点，FC层先把B,T,H拉伸成N,T*H, 再用仿射变换的W T*H,D 得到 N*D输出。
+    # TIMESTEPS*HIDDEN_SIZE作为输入尺寸，PRED_STEPS表示预测值长度（步长），作为输出尺寸
+    fc1 = FCLayer(Params.MINI_BATCH_SIZE, 2400, 400, NoAct, AdamOptimizer,
+                  optmParamsFc1, True, Params.DTYPE_DEFAULT, Params.INIT_W)
+    # 拼接网络层
+    seqLayers = [rnn1, fc1]
+    # 生成训练模型实例
+    # sess = Session(seqLayers,MseLoss)
+    sess = Session(seqLayers, SoftmaxCrossEntropyLoss)
+    # lrt = Params.LEARNING_RATE
+    # lrt = 1
+    # 开始训练过程，训练EPOCH_NUM个epoch
+    iter = 0
+    for epoch in range(Params.EPOCH_NUM):
+        # 获取当前epoch使用的learing rate
+        # for key in Params.DIC_L_RATE.keys():
+        #     if (epoch + 1) < key:
+        #         break
+        #     lrt = Params.DIC_L_RATE[key]
+        lrt = Params.LEARNING_RATE
+
+        # if loss_v1<1000* lrt:
+        #    lrt  = lrt /10
+        logger.info("epoch %2d, learning_rate= %.8f" % (epoch, lrt))
+        # 随机打乱训练样本顺序，功能类似 shuffle=True
+        #dataRngs = seqData.getTrainRanges(Params.MINI_BATCH_SIZE)
+        # 当前epoch中，对n组sample进行训练，每个sample包含BATCH_SIZE个样本
+        for batch in range(train_data_len):
+            start = time.time()
+            # 根据getTrainRanges打乱后的序号，取训练数据
+            x, y_ = seqData.getTrainDataByRng(dataRngs[batch])
+            # 训练模型，输出序列，只需要比较第0维；y.shape->(32,10,1),y_[:,:,0].shape->(32,10),相当于只是对y_进行降维，没有改变数据
+            # _, loss_t = sess.train_steps(x, y_[:,:,0], lrt)
+            # x(32, 1, 2) y_(32,)
+            _, loss_t = sess.train_steps(x, y_, lrt)
+            iter += 1
+
+            if (batch % Params.LOG_FREQ == 0):  # 若干个batch show一次日志
+                logger.info("epoch %2d-%3d, loss= %.8f st[%.1f]" % (epoch, batch, loss_t, s_t))
+                fd = open(r"C:/Users/Administrator/PycharmProjects/pythonProject/files/file.txt", "a", encoding="utf-8")
+                print("epoch %2d-%3d, loss= %.8f st[%.1f]" , epoch, batch, loss_t, s_t, file=fd)
+                fd.close()
+
+            # 使用随机验证样本验证结果
+            #if (batch % Params.VAL_FREQ == 0 and (batch + epoch) > 0):
+                # x_v, y_v = seqData.getValData(Params.VALIDATION_CAPACITY)
+                #x_v, y_v = seqData.getTestData()
+                # 多个出数值的序列，只需要比较0维
+                # y, loss_v,_ = sess.validation(x_v, y_v[:,:,0])
+                #y, loss_v, _, result = sess.validation(x_v, y_v)
+
+                #logger.info('epoch %2d-%3d, loss=%f, loss_v=%f' % (epoch, batch, loss_t, loss_v))
+                #fd = open(r"C:/Users/Administrator/PycharmProjects/pythonProject/files/file.txt", "a", encoding="utf-8")
+                #print('epoch %2d-%3d, loss=%f, loss_v=%f',epoch, batch, loss_t, loss_v, file=fd)
+                #fd.close()
+
+                #if (True == Params.SHOW_LOSS_CURVE):
+                    # view.addData(fc1.optimizerObj.Iter,
+                    #view.addData(iter, loss_t, loss_v, 0, 0)
+            s_t = time.time() - start
+
+    logger.info('session end')
+    fd = open(r"C:/Users/Administrator/PycharmProjects/pythonProject/files/file.txt", "a", encoding="utf-8")
+    print('session end',file=fd)
+    fd.close()
+    test_acc = []
+    count_acc = 0
+    #test_loss = []
     for batch_idx in range(train_data_len,validate_data_len):
         x_v, y_v = seqData.getTrainDataByRng(dataRngs[batch_idx])
-        # 多个出数值的序列，只需要比较0维
-        inpt_v = torch.tensor(x_v)
-        target_v = torch.tensor(y_v)
-        output_v = model(inpt_v)
-        y_argmax = torch.argmax(output_v, axis=1)
-        loss = nn.CrossEntropyLoss()(output_v, target_v.to(torch.int64))
-        correct = (y_argmax.to(target_v.dtype) == target_v).sum().float() / 32
+        y, loss_v, _, result = sess.validation(x_v, y_v)
+        if (batch_idx % 10 == 0):  # 若干个batch show一次日志
+            print("validate module batch: {} Accuracy: {} ".format(batch_idx, correct))
+        correct = (result == y_v).sum() / Params.MINI_BATCH_SIZE
         count_acc += correct
-        if (batch_idx % 5 == 0):  # 若干个batch show一次日志
-            print("validate module epoch: {} batch: {} Accuracy: {} loss {}".format(epoch, batch_idx, correct, loss.item()))
-    VAL_ACC.append(count_acc/(len(dataRngs)-1))
-    VAL_loss.append(loss.item())
-# 训练完毕后，可以用模型进行预测
-# ...
-#dataRngs_t = seqData.getTestRanges(batch_size)
-count_acc=0
-test_acc=[]
-test_loss=[]
-for batch_idx in range(validate_data_len,dataRngs_len-1):
-    x_t, y_t = seqData.getTrainDataByRng(dataRngs[batch_idx])
-    # 多个出数值的序列，只需要比较0维
-    inpt_t = torch.tensor(x_t)
-    target_t = torch.tensor(y_t)
-    output_t = model(inpt_t)
-    y_argmax = torch.argmax(output_t, axis=1)
-    loss = nn.CrossEntropyLoss()(output_t, target_t.to(torch.int64))
-    correct = (y_argmax.to(target_t.dtype) == target_t).sum().float() / 32
-    if (batch_idx % 5 == 0):  # 若干个batch show一次日志
-        print("test module epoch: {} batch: {} Accuracy: {} loss {}".format(epoch, batch_idx, correct, loss.item()))
-    test_acc.append(correct)
-    test_loss.append(loss.item())
-end = time.time()
-print("end time is：",end)
-#pyplot.plot(loss.detach().numpy(), label='loss')
-pyplot.plot(Triain_ACC, label='train Accuracy')
-pyplot.title('training accuracy')
-pyplot.legend()
-pyplot.show()
-pyplot.plot(Triain_loss, label='train loss')
-pyplot.title('training loss function')
-pyplot.legend()
-pyplot.show()
-pyplot.plot(VAL_ACC, label='validate Accuracy')
-pyplot.title('validate accuracy')
-pyplot.legend()
-pyplot.show()
-pyplot.plot(VAL_loss, label='validate loss')
-pyplot.title('validate loss function')
-pyplot.legend()
-pyplot.show()
-pyplot.plot(test_acc, label='test Accuracy')
-pyplot.title('test accuracy')
-pyplot.legend()
-pyplot.show()
-pyplot.plot(test_loss, label='test loss')
-pyplot.title('test loss function')
-pyplot.legend()
-pyplot.show()
+        test_acc.append(correct)
+    #pyplot.plot(y, label='predictions')
+    #pyplot.title('predictions')
+    #pyplot.legend()
+    #pyplot.show()
+    #pyplot.plot(y_v, label='real_curve')
+    #pyplot.title('real_curve')
+    #pyplot.legend()
+    #pyplot.show()
+    #pyplot.plot(loss_v, label='loss_v curve')
+    #pyplot.title('loss_v')
+    #pyplot.legend()
+    #pyplot.show()
+    print(result.shape)
+    print(loss_v.shape)
+    feature_extract.Creat_Image('predictions', 'Time', 'Value', 'y_predictions.png', np.arange(0, len(result)) / 16000, result, 0)
+    feature_extract.Creat_Image('real_curve', 'Time', 'Value', 'y_real_curve.png', np.arange(0, len(y_v)) / 16000, y_v, 0)
+    feature_extract.Creat_Image('test_acc', 'Time', 'Value', 'test_acc.png', np.arange(0, len(test_acc)) / 16000, test_acc, 0)
+    exit()
+
+if __name__ == '__main__':
+    #语音文件预处理
+    #directory = 'E:/wave/data_aishell/data_aishell/wav'
+    #out_folder = 'E:/wave/data_aishell/current'
+    #train_data = 'C:/Users/Administrator/PycharmProjects/pythonProject1/files/train'
+    #data_deal.get_data(directory,out_folder,'train',train_data)
+    #directory = 'E:/wave/data_aishell/data_aishell/dev'
+    #val_data = 'C:/Users/Administrator/PycharmProjects/pythonProject1/files/val'
+    #data_deal.get_data(directory,out_folder,'dev',val_data)
+    #directory = 'E:/wave/data_aishell/data_aishell/test'
+    #test_data = 'C:/Users/Administrator/PycharmProjects/pythonProject1/files/test'
+    #data_deal.get_data(directory,out_folder,'test',test_data)
+    #开始读取数据训练
+    main_rnn()
+    input()
